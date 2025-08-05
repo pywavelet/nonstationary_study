@@ -392,7 +392,7 @@ if __name__ == "__main__":
 
     # Quick example with LS2
     np.random.seed(42)
-    sim = TimeVaryingPSDSimulator(T=1500)
+    sim = TimeVaryingPSDSimulator(T=2 ** 15)
 
     for dpg in DPG_NAMES:
         print(f"Generating {dpg} example...")
