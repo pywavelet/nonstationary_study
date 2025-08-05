@@ -1,10 +1,19 @@
-import numpy as np
-import matplotlib.pyplot as plt
-from scipy import signal
-from scipy.fft import fft, fftfreq
+import os
 import warnings
 
+import h5py
+import matplotlib.pyplot as plt
+import numpy as np
+from scipy import signal
+
 warnings.filterwarnings('ignore')
+
+DPG_NAMES = [
+    'LS1',  # Time-varying MA process with sinusoidal coefficients
+    'LS2',  # Time-varying MA process with cosine coefficients
+    'LS3',  # Time-varying AR process
+    'PS1'  # Piecewise stationary AR process
+]
 
 
 class TimeVaryingPSDSimulator:
@@ -18,7 +27,7 @@ class TimeVaryingPSDSimulator:
     - LS3: Time-varying AR process
     """
 
-    def __init__(self, T=1500, innovation_type='normal'):
+    def __init__(self, T=2 ** 14, innovation_type='normal', outdir='LS_sim_data'):
         """
         Initialize simulator.
 
@@ -32,6 +41,8 @@ class TimeVaryingPSDSimulator:
         self.T = T
         self.innovation_type = innovation_type
         self.time_grid = np.linspace(0, 1, T)
+        self.outdir = outdir
+        os.makedirs(self.outdir, exist_ok=True)
 
     def generate_innovations(self):
         """Generate innovations according to specified distribution."""
@@ -214,18 +225,15 @@ class TimeVaryingPSDSimulator:
 
         return Sxx.T, t_rescaled, f_rescaled
 
-    def plot_comparison(self, dgp_name, save_fig=False):
+    def simulate(self, dgp_name):
         """
-        Generate comparison plots of true vs empirical PSD.
+        Simulate data for the specified DGP.
 
         Parameters:
         -----------
         dgp_name : str
             'LS1', 'LS2', 'LS3', or 'PS1'
-        save_fig : bool
-            Whether to save the figure
         """
-        # Simulate data
         if dgp_name == 'LS1':
             X, w = self.simulate_LS1()
             true_psd, t_true, f_true = self.compute_true_psd_LS1()
@@ -240,61 +248,55 @@ class TimeVaryingPSDSimulator:
             # For PS1, we'll compute empirical PSD only
             true_psd, t_true, f_true = None, None, None
         else:
-            raise ValueError("dgp_name must be 'LS1', 'LS2', 'LS3', or 'PS1'")
+            raise ValueError(f"dgp_name must be '{', '.join(DPG_NAMES)}'")
 
+        return X, w, true_psd, t_true, f_true
+
+    def plot_comparison(self, dgp_name, X, w, true_psd, t_true, f_true):
         # Compute empirical PSD
         emp_psd, t_emp, f_emp = self.compute_empirical_psd(X)
 
         # Create plots
-        fig, axes = plt.subplots(2, 2, figsize=(14, 10))
+        fig, axes = plt.subplots(1, 2, figsize=(14, 5))
         fig.suptitle(f'{dgp_name} Process: Time-Varying PSD Analysis', fontsize=16)
 
         # Plot time series
-        axes[0, 0].plot(X)
-        axes[0, 0].set_title('Simulated Time Series')
-        axes[0, 0].set_xlabel('Time')
-        axes[0, 0].set_ylabel('Amplitude')
-        axes[0, 0].grid(True, alpha=0.3)
+        axes[0].plot(X)
+        axes[0].set_title('Simulated Time Series')
+        axes[0].set_xlabel('Time')
+        axes[0].set_ylabel('Amplitude')
+        axes[0].grid(True, alpha=0.3)
 
-        # Plot innovations
-        axes[0, 1].plot(w)
-        axes[0, 1].set_title(f'Innovations ({self.innovation_type})')
-        axes[0, 1].set_xlabel('Time')
-        axes[0, 1].set_ylabel('Amplitude')
-        axes[0, 1].grid(True, alpha=0.3)
-
-        # Plot true PSD (if available)
-        if true_psd is not None:
-            im1 = axes[1, 0].imshow(true_psd, aspect='auto', origin='lower',
-                                    extent=[f_true[0], f_true[-1], t_true[0], t_true[-1]],
-                                    cmap='viridis')
-            axes[1, 0].set_title('True Time-Varying PSD')
-            axes[1, 0].set_xlabel('Rescaled Frequency')
-            axes[1, 0].set_ylabel('Rescaled Time')
-            plt.colorbar(im1, ax=axes[1, 0])
-        else:
-            axes[1, 0].text(0.5, 0.5, 'True PSD\nNot Available\nfor PS1',
-                            ha='center', va='center', transform=axes[1, 0].transAxes)
-            axes[1, 0].set_title('True Time-Varying PSD')
-
-        # Plot empirical PSD
-        im2 = axes[1, 1].imshow(emp_psd, aspect='auto', origin='lower',
-                                extent=[f_emp[0], f_emp[-1], t_emp[0], t_emp[-1]],
-                                cmap='viridis')
-        axes[1, 1].set_title('Empirical Time-Varying PSD')
-        axes[1, 1].set_xlabel('Rescaled Frequency')
-        axes[1, 1].set_ylabel('Rescaled Time')
-        plt.colorbar(im2, ax=axes[1, 1])
+        im1 = axes[1].imshow(
+            true_psd, aspect='auto', origin='lower',
+            extent=[f_true[0], f_true[-1], t_true[0], t_true[-1]],
+            cmap='viridis')
+        axes[1].set_title('True Time-Varying PSD')
+        axes[1].set_xlabel('Rescaled Frequency')
+        axes[1].set_ylabel('Rescaled Time')
+        plt.colorbar(im1, ax=axes[1])
 
         plt.tight_layout()
 
-        if save_fig:
-            plt.savefig(f'{dgp_name}_{self.innovation_type}_analysis.png',
-                        dpi=300, bbox_inches='tight')
+        ase = compute_average_square_error(true_psd, emp_psd,
+                                           np.linspace(0, 1, true_psd.shape[0]),
+                                           np.linspace(0, 1, true_psd.shape[1]))
+        print(f"Average Square Error: {ase:.4f}")
 
-        plt.show()
+        plt.savefig(f'{self.outdir}/{dgp_name}_{self.innovation_type}_analysis.png',
+                    dpi=300, bbox_inches='tight')
 
-        return X, w, true_psd, emp_psd
+    def save_data(self, dgp_name):
+        X, w, true_psd, t_true, f_true = self.simulate(dgp_name)
+        self.plot_comparison(dgp_name, X, w, true_psd, t_true, f_true)
+        # just save the timeseries, true PSD, t_true, f_true
+        with h5py.File(f'{self.outdir}/{dgp_name}_{self.innovation_type}.h5', 'w') as f:
+            f.create_dataset('time_series', data=X)
+            f.create_dataset('innovations', data=w)
+            if true_psd is not None:
+                f.create_dataset('true_psd', data=true_psd)
+                f.create_dataset('t_true', data=t_true)
+                f.create_dataset('f_true', data=f_true)
 
 
 def run_simulation_study():
@@ -381,60 +383,6 @@ def compute_average_square_error(true_psd, estimated_psd, time_grid, freq_grid):
     return ase
 
 
-def demonstrate_gravitational_wave_application():
-    """
-    Demonstrate application to gravitational wave data analysis.
-    This shows how the methodology could be applied to LIGO-type data.
-    """
-    print("\nGravitational Wave Application Demonstration")
-    print("=" * 50)
-
-    # Simulate LIGO-like noise characteristics
-    # Higher sampling rate, longer duration
-    T_gw = 4096  # 1 second at 4096 Hz (typical LIGO sampling)
-
-    # Create simulator with different characteristics
-    sim_gw = TimeVaryingPSDSimulator(T=T_gw, innovation_type='normal')
-
-    # Generate LS2-type process (good for demonstrating non-stationarity)
-    X_gw, w_gw = sim_gw.simulate_LS2()
-
-    # Add some realistic scaling
-    X_gw = X_gw * 1e-18  # Scale to strain-like amplitudes
-
-    # Compute time-varying PSD with higher resolution
-    emp_psd_gw, t_gw, f_gw = sim_gw.compute_empirical_psd(X_gw, window_size=128, overlap=0.75)
-
-    # Plot results
-    fig, axes = plt.subplots(2, 1, figsize=(12, 8))
-    fig.suptitle('Gravitational Wave Detector Noise Simulation', fontsize=14)
-
-    # Time series
-    time_axis = np.linspace(0, 1, T_gw)
-    axes[0].plot(time_axis, X_gw)
-    axes[0].set_title('Simulated Detector Strain')
-    axes[0].set_xlabel('Time (s)')
-    axes[0].set_ylabel('Strain')
-    axes[0].grid(True, alpha=0.3)
-    axes[0].ticklabel_format(style='scientific', axis='y', scilimits=(0, 0))
-
-    # Time-varying PSD
-    im = axes[1].imshow(emp_psd_gw.T, aspect='auto', origin='lower',
-                        extent=[t_gw[0], t_gw[-1], f_gw[0] * 2048, f_gw[-1] * 2048],
-                        cmap='plasma')
-    axes[1].set_title('Time-Varying Power Spectral Density')
-    axes[1].set_xlabel('Time (s)')
-    axes[1].set_ylabel('Frequency (Hz)')
-    axes[1].set_yscale('log')
-    cbar = plt.colorbar(im, ax=axes[1])
-    cbar.set_label('PSD (strain²/Hz)')
-
-    plt.tight_layout()
-    plt.show()
-
-    return X_gw, emp_psd_gw, t_gw, f_gw
-
-
 if __name__ == "__main__":
     # Run basic demonstration
     print("Time-Varying PSD Simulator")
@@ -444,20 +392,8 @@ if __name__ == "__main__":
 
     # Quick example with LS2
     np.random.seed(42)
-    sim = TimeVaryingPSDSimulator(T=1500, innovation_type='normal')
+    sim = TimeVaryingPSDSimulator(T=1500)
 
-    print("Generating LS2 example...")
-    X, w, true_psd, emp_psd = sim.plot_comparison('LS2')
-
-    # Compute ASE if true PSD is available
-    if true_psd is not None:
-        ase = compute_average_square_error(true_psd, emp_psd,
-                                           np.linspace(0, 1, true_psd.shape[0]),
-                                           np.linspace(0, 1, true_psd.shape[1]))
-        print(f"Average Square Error: {ase:.4f}")
-
-    # Uncomment to run full study:
-    # results = run_simulation_study()
-
-    # Uncomment for gravitational wave demonstration:
-    # demonstrate_gravitational_wave_application()
+    for dpg in DPG_NAMES:
+        print(f"Generating {dpg} example...")
+        sim.save_data(dpg)
